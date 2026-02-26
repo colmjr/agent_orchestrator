@@ -1,0 +1,33 @@
+# Agent Orchestrator Configuration
+
+# Model assignments per phase
+models:
+  feature: "claude-opus-4-6"       # Full-context feature implementation
+  refactor: "codex-5.3"            # Cold refactor - zero prior context
+  review: "claude-opus-4-6"        # Fresh PR review session
+
+# Branch naming
+branching:
+  prefix: "feat"                   # Branch prefix: feat/task-slug
+  separator: "/"
+
+# PR settings
+pr:
+  draft: false                     # Create as draft PR
+  base_branch: "main"             # Default base branch
+
+# Notification settings
+notifications:
+  terminal_bell: true
+  stdout: true
+
+# Test commands - customize per project
+tests:
+  command: "npm test"              # Override per project
+  coverage: true
+
+# Orchestrator behavior
+orchestrator:
+  todo_file: "TODO.md"
+  max_retries: 2                   # Retries per phase on failure
+  require_tests_pass: true         # Block PR review if tests fail
