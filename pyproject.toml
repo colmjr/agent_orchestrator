@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-orchestrator"
+version = "0.1.0"
+description = "Multi-model pipeline that automates feature development using OpenCode"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+agent-orchestrator = "agent_orchestrator.orchestrator:main"
+
+[tool.setuptools.package-data]
+agent_orchestrator = ["config.yaml"]

@@ -46,20 +46,22 @@ Task Description
 ```bash
 git clone https://github.com/colmjr/agent_orchestrator.git
 cd agent_orchestrator
-pip install -r requirements.txt
+pip install .
 ```
+
+This installs the `agent-orchestrator` command globally.
 
 ## Usage
 
 ```bash
 # Basic usage - run from your project directory
-python orchestrator.py "Add user authentication with JWT tokens" --workdir /path/to/your/project
+agent-orchestrator "Add user authentication with JWT tokens" --workdir /path/to/your/project
 
 # Short flags
-python orchestrator.py "Fix the pagination bug in /api/users" -w ./my-project
+agent-orchestrator "Fix the pagination bug in /api/users" -w ./my-project
 
 # With a custom config file
-python orchestrator.py "Refactor the database layer" -w ./my-project -c ./my-config.yaml
+agent-orchestrator "Refactor the database layer" -w ./my-project -c ./my-config.yaml
 ```
 
 ### Arguments
@@ -118,7 +120,7 @@ cp /path/to/agent_orchestrator/config.yaml .orchestrator.yaml
 
 # Edit test command, base branch, etc.
 # Then run with:
-python /path/to/orchestrator.py "your task" -w . -c .orchestrator.yaml
+agent-orchestrator "your task" -w . -c .orchestrator.yaml
 ```
 
 ## Pipeline Phases in Detail
@@ -155,7 +157,7 @@ You get a terminal notification and three options:
 ## Example
 
 ```bash
-$ python orchestrator.py "Add rate limiting middleware to the Express API" -w ~/projects/my-api
+$ agent-orchestrator "Add rate limiting middleware to the Express API" -w ~/projects/my-api
 
 ============================================================
   AGENT ORCHESTRATOR
