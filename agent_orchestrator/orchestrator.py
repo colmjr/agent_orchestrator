@@ -57,18 +57,35 @@ DEFAULT_THEME = {
     "muted": "dim",
 }
 
+THEME_PRESETS = {
+    "default": DEFAULT_THEME,
+    "nord": {
+        "accent": "#88C0D0",
+        "success": "#A3BE8C",
+        "error": "#BF616A",
+        "warning": "#EBCB8B",
+        "info": "#81A1C1",
+        "muted": "#4C566A",
+    },
+}
+
 
 class Theme:
     """Resolves theme colors from config with fallback defaults."""
 
     def __init__(self, config: dict) -> None:
         theme_cfg = config.get("theme", {}) or {}
-        self.accent = theme_cfg.get("accent", DEFAULT_THEME["accent"])
-        self.success = theme_cfg.get("success", DEFAULT_THEME["success"])
-        self.error = theme_cfg.get("error", DEFAULT_THEME["error"])
-        self.warning = theme_cfg.get("warning", DEFAULT_THEME["warning"])
-        self.info = theme_cfg.get("info", DEFAULT_THEME["info"])
-        self.muted = theme_cfg.get("muted", DEFAULT_THEME["muted"])
+        preset_name = str(theme_cfg.get("preset", "default")).lower()
+        preset = THEME_PRESETS.get(preset_name, DEFAULT_THEME)
+        merged = {**DEFAULT_THEME, **preset, **theme_cfg}
+
+        self.preset = preset_name
+        self.accent = merged.get("accent", DEFAULT_THEME["accent"])
+        self.success = merged.get("success", DEFAULT_THEME["success"])
+        self.error = merged.get("error", DEFAULT_THEME["error"])
+        self.warning = merged.get("warning", DEFAULT_THEME["warning"])
+        self.info = merged.get("info", DEFAULT_THEME["info"])
+        self.muted = merged.get("muted", DEFAULT_THEME["muted"])
 
     def s(self, role: str, text: str, bold: bool = False) -> str:
         """Style text with a theme role. Returns rich markup string."""
@@ -306,7 +323,7 @@ Output ONLY the numbered questions, one per line, like:
 
 Do NOT include any other text, preamble, or explanation."""
 
-    model = config["models"]["feature"]
+    model = config["models"].get("clarify", config["models"]["feature"])
     result = run_agent(prompt, model, workdir, timeout=120)
 
     # Parse numbered questions from the output
@@ -409,7 +426,7 @@ Write a TODO.md file in the project root with:
 
 Write ONLY the TODO.md file, nothing else."""
 
-    model = config["models"]["feature"]
+    model = config["models"].get("planning", config["models"]["feature"])
     result = run_agent(prompt, model, workdir)
 
     todo_path = Path(workdir) / config["orchestrator"]["todo_file"]
@@ -446,7 +463,7 @@ Implement all the subtasks in the TODO. For each completed subtask, update TODO.
 
 Work through each item methodically. Write clean, well-structured code. Make sure everything compiles/runs correctly before finishing."""
 
-    model = config["models"]["feature"]
+    model = config["models"].get("implement", config["models"]["feature"])
     result = run_agent(prompt, model, workdir)
 
     if result.returncode != 0:
