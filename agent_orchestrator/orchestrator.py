@@ -5,6 +5,7 @@ Agent Orchestrator - Multi-model pipeline for feature development.
 Uses OpenCode CLI (https://opencode.ai) to orchestrate across providers.
 
 Pipeline:
+  0. Clarifying questions (optional, interactive)
   1. Task decomposition → TODO.md
   2. Opus 4.6: Feature implementation (full context)
   3. Codex 5.3: Cold refactor (zero context, fresh eyes)
@@ -16,11 +17,19 @@ Pipeline:
 import subprocess
 import sys
 import os
+import json
 import yaml
 import argparse
 import re
+import threading
 from pathlib import Path
 from datetime import datetime
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+
+console = Console()
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -31,7 +40,7 @@ DEFAULT_CONFIG = SCRIPT_DIR / "config.yaml"
 def load_config(config_path: str | None = None) -> dict:
     path = Path(config_path) if config_path else DEFAULT_CONFIG
     if not path.exists():
-        print(f"[ERROR] Config not found: {path}")
+        console.print(f"[red bold]Config not found: {path}[/red bold]")
         sys.exit(1)
     with open(path) as f:
         return yaml.safe_load(f)
@@ -43,11 +52,15 @@ def load_config(config_path: str | None = None) -> dict:
 def notify(message: str, config: dict):
     """Send notification via terminal bell + stdout."""
     if config["notifications"].get("terminal_bell"):
-        print("\a", end="", flush=True)
+        console.print("\a", end="")
     if config["notifications"].get("stdout"):
-        print(f"\n{'=' * 60}")
-        print(f"  NOTIFICATION: {message}")
-        print(f"{'=' * 60}\n")
+        console.print()
+        console.print(
+            Panel(
+                f"[bold]{message}[/bold]", title="NOTIFICATION", border_style="yellow"
+            )
+        )
+        console.print()
 
 
 def slugify(text: str) -> str:
@@ -57,29 +70,140 @@ def slugify(text: str) -> str:
     return slug[:50]
 
 
-def run_agent(prompt: str, model: str, workdir: str) -> subprocess.CompletedProcess:
-    """Run an OpenCode CLI session."""
-    cmd = ["opencode", "run", "--model", model, prompt]
+def _format_agent_event(event: dict) -> None:
+    """Pretty-print a single JSON streaming event from opencode."""
+    part = event.get("part", {})
+    event_type = part.get("type", "")
 
-    print(f"\n[AGENT] Running {model}...")
-    print(f"[AGENT] Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
-    print(f"[AGENT] Working dir: {workdir}\n")
+    if event_type == "step-start":
+        console.print("[dim]---[/dim]")
 
-    result = subprocess.run(
+    elif event_type == "tool":
+        tool_name = part.get("tool", "unknown")
+        state = part.get("state", {})
+        title = state.get("title", "")
+        status = state.get("status", "")
+
+        if title:
+            console.print(f"  [cyan bold]{tool_name}[/cyan bold] [dim]{title}[/dim]")
+        else:
+            # Show the input for context
+            tool_input = state.get("input", {})
+            input_summary = ""
+            if isinstance(tool_input, dict):
+                # Show first meaningful value
+                for key in ("filePath", "command", "pattern", "content"):
+                    if key in tool_input:
+                        val = str(tool_input[key])
+                        input_summary = val[:80] + ("..." if len(val) > 80 else "")
+                        break
+            console.print(
+                f"  [cyan bold]{tool_name}[/cyan bold] [dim]{input_summary}[/dim]"
+            )
+
+        if status == "error":
+            error = state.get("error", "unknown error")
+            console.print(f"  [red]{error}[/red]")
+
+    elif event_type == "text":
+        text = part.get("text", "")
+        if text.strip():
+            console.print(text)
+
+    elif event_type == "step-finish":
+        tokens = part.get("tokens", {})
+        total = tokens.get("total", 0)
+        output = tokens.get("output", 0)
+        if total:
+            console.print(f"[dim]  tokens: {total:,} total, {output:,} output[/dim]")
+
+
+def run_agent(
+    prompt: str, model: str, workdir: str, timeout: int = 600
+) -> subprocess.CompletedProcess:
+    """Run an OpenCode CLI session with real-time streaming output."""
+    cmd = ["opencode", "run", "--format", "json", "--model", model, prompt]
+
+    console.print(f"\n[dim]Running {model}...[/dim]")
+    console.print(
+        f"[dim]Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}[/dim]"
+    )
+    console.print(f"[dim]Working dir: {workdir}[/dim]\n")
+
+    process = subprocess.Popen(
         cmd,
         cwd=workdir,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=600,  # 10 min timeout per phase
     )
 
-    if result.returncode != 0:
-        print(f"[ERROR] Agent exited with code {result.returncode}")
-        print(f"[STDERR] {result.stderr[:500]}")
-    else:
-        print(f"[AGENT] Completed successfully.")
+    text_parts: list[str] = []
+    stderr_lines: list[str] = []
 
-    return result
+    assert process.stdout is not None
+    assert process.stderr is not None
+
+    proc_stdout = process.stdout
+    proc_stderr = process.stderr
+
+    # Read stderr in a background thread to avoid deadlocks
+    def read_stderr():
+        for line in proc_stderr:
+            stderr_lines.append(line)
+
+    stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+    stderr_thread.start()
+
+    # Stream JSON events and display them in real-time
+    for line in proc_stdout:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+            _format_agent_event(event)
+            # Accumulate text parts for callers that need result.stdout
+            part = event.get("part", {})
+            if part.get("type") == "text":
+                text = part.get("text", "")
+                if text:
+                    text_parts.append(text)
+        except json.JSONDecodeError:
+            # Non-JSON line, just print it
+            console.print(line)
+
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        console.print(f"\n[red bold]Agent timed out after {timeout}s[/red bold]")
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=-1,
+            stdout="\n".join(text_parts),
+            stderr="TIMEOUT",
+        )
+
+    stderr_thread.join(timeout=5)
+
+    stdout_str = "\n".join(text_parts)
+    stderr_str = "".join(stderr_lines)
+
+    if process.returncode != 0:
+        console.print(f"\n[red]Agent exited with code {process.returncode}[/red]")
+        if stderr_str:
+            console.print(f"[red]{stderr_str[:500]}[/red]")
+    else:
+        console.print(f"\n[green]Agent completed successfully.[/green]")
+
+    return subprocess.CompletedProcess(
+        args=cmd,
+        returncode=process.returncode,
+        stdout=stdout_str,
+        stderr=stderr_str,
+    )
 
 
 def run_git(args: list[str], workdir: str) -> subprocess.CompletedProcess:
@@ -94,14 +218,103 @@ def run_gh(args: list[str], workdir: str) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
 
 
+# ─── Phase 0: Clarifying Questions ──────────────────────────────────────────
+
+
+def phase_clarify(task: str, config: dict, workdir: str) -> str:
+    """Optionally ask the user clarifying questions before starting the pipeline."""
+    console.print()
+    console.rule("[bold]Phase 0: Clarifying Questions[/bold]")
+
+    # Ask the LLM to generate clarifying questions based on the task
+    prompt = f"""You are a technical project planner about to implement a task. Before starting, look at the project structure and files to understand the existing codebase, then generate 2-4 short, specific clarifying questions that would help you implement it better.
+
+Task: {task}
+
+Output ONLY the numbered questions, one per line, like:
+1. Question here?
+2. Another question?
+
+Do NOT include any other text, preamble, or explanation."""
+
+    model = config["models"]["feature"]
+    result = run_agent(prompt, model, workdir, timeout=120)
+
+    # Parse numbered questions from the output
+    questions = re.findall(r"^\s*\d+[\.\)]\s*(.+)", result.stdout, re.MULTILINE)
+
+    if not questions:
+        console.print(
+            "[dim]Could not generate clarifying questions. Proceeding with original task.[/dim]"
+        )
+        return task
+
+    console.print(f"\n  Generated {len(questions)} clarifying question(s).")
+    console.print('  [dim](Press Enter to skip a question, "skip" to skip all,[/dim]')
+    console.print('  [dim] or "own" to provide your own context instead.)[/dim]\n')
+
+    answers = []
+    freeform_text = None
+
+    for i, question in enumerate(questions, 1):
+        console.print(f"  [bold]Q{i}:[/bold] {question}")
+        try:
+            response = input("  > ").strip()
+        except EOFError:
+            break
+
+        if response.lower() == "skip":
+            console.print("  [dim]Skipping remaining questions.[/dim]")
+            break
+        elif response.lower() == "own":
+            console.print(
+                "\n  [bold]Provide your own context[/bold] [dim](enter a blank line to finish):[/dim]"
+            )
+            lines = []
+            while True:
+                try:
+                    line = input("  > ")
+                except EOFError:
+                    break
+                if line.strip() == "":
+                    break
+                lines.append(line)
+            if lines:
+                freeform_text = "\n".join(lines)
+            break
+        elif response:
+            answers.append((question, response))
+        # Empty response = skip this question, continue to next
+        console.print()
+
+    # Build enriched task string
+    if not answers and not freeform_text:
+        console.print(
+            "[dim]No additional context provided. Proceeding with original task.[/dim]"
+        )
+        return task
+
+    enriched = task
+
+    if answers:
+        enriched += "\n\nClarifications:"
+        for q, a in answers:
+            enriched += f"\n  Q: {q}\n  A: {a}"
+
+    if freeform_text:
+        enriched += f"\n\nAdditional context from user:\n{freeform_text}"
+
+    console.print("\n[green]Task enriched with user context.[/green]")
+    return enriched
+
+
 # ─── Phase 1: Task Decomposition ────────────────────────────────────────────
 
 
 def phase_decompose(task: str, config: dict, workdir: str) -> str:
     """Break down task into TODO.md using Opus."""
-    print("\n" + "─" * 60)
-    print("PHASE 1: Task Decomposition")
-    print("─" * 60)
+    console.print()
+    console.rule("[bold]Phase 1: Task Decomposition[/bold]")
 
     prompt = f"""You are a technical project planner. Break down the following task into a clear, actionable TODO.md file.
 
@@ -121,14 +334,14 @@ Write ONLY the TODO.md file, nothing else."""
 
     todo_path = Path(workdir) / config["orchestrator"]["todo_file"]
     if todo_path.exists():
-        print(f"[PHASE 1] TODO.md created at {todo_path}")
+        console.print(f"[green]TODO.md created at {todo_path}[/green]")
         with open(todo_path) as f:
             content = f.read()
-        print(content)
+        console.print(content)
         return content
     else:
         # If claude didn't create the file, create it from output
-        print("[PHASE 1] Creating TODO.md from agent output...")
+        console.print("[yellow]Creating TODO.md from agent output...[/yellow]")
         with open(todo_path, "w") as f:
             f.write(result.stdout)
         return result.stdout
@@ -139,9 +352,8 @@ Write ONLY the TODO.md file, nothing else."""
 
 def phase_implement(task: str, todo_content: str, config: dict, workdir: str):
     """Implement the feature using Opus with full context."""
-    print("\n" + "─" * 60)
-    print("PHASE 2: Feature Implementation (Opus 4.6)")
-    print("─" * 60)
+    console.print()
+    console.rule("[bold]Phase 2: Feature Implementation[/bold]")
 
     prompt = f"""You are implementing a feature. Here is the task and plan:
 
@@ -160,7 +372,7 @@ Work through each item methodically. Write clean, well-structured code. Make sur
     if result.returncode != 0:
         raise RuntimeError(f"Feature implementation failed: {result.stderr[:300]}")
 
-    print("[PHASE 2] Feature implementation complete.")
+    console.print("[green]Phase 2 complete.[/green]")
     return result
 
 
@@ -169,9 +381,8 @@ Work through each item methodically. Write clean, well-structured code. Make sur
 
 def phase_refactor(config: dict, workdir: str):
     """Run Codex with zero prior context for unbiased refactoring."""
-    print("\n" + "─" * 60)
-    print("PHASE 3: Cold Refactor (Codex 5.3 - Zero Context)")
-    print("─" * 60)
+    console.print()
+    console.rule("[bold]Phase 3: Cold Refactor[/bold]")
 
     # Intentionally minimal prompt - no task context leaked
     prompt = """Review the current state of this codebase. Refactor for:
@@ -191,7 +402,7 @@ Do not touch test files unless they have clear code quality issues."""
     if result.returncode != 0:
         raise RuntimeError(f"Refactor phase failed: {result.stderr[:300]}")
 
-    print("[PHASE 3] Cold refactor complete.")
+    console.print("[green]Phase 3 complete.[/green]")
     return result
 
 
@@ -200,9 +411,8 @@ Do not touch test files unless they have clear code quality issues."""
 
 def phase_ship(task: str, config: dict, workdir: str) -> str | None:
     """Checkout new branch, commit changes, create PR."""
-    print("\n" + "─" * 60)
-    print("PHASE 4: Ship (Branch + Commit + PR)")
-    print("─" * 60)
+    console.print()
+    console.rule("[bold]Phase 4: Ship[/bold]")
 
     slug = slugify(task)
     prefix = config["branching"]["prefix"]
@@ -212,7 +422,7 @@ def phase_ship(task: str, config: dict, workdir: str) -> str | None:
     base_branch = config["pr"]["base_branch"]
 
     # Checkout new branch
-    print(f"[SHIP] Creating branch: {branch_name}")
+    console.print(f"[dim]Creating branch: {branch_name}[/dim]")
     result = run_git(["checkout", "-b", branch_name], workdir)
     if result.returncode != 0:
         raise RuntimeError(f"Failed to create branch: {result.stderr}")
@@ -223,19 +433,19 @@ def phase_ship(task: str, config: dict, workdir: str) -> str | None:
     # Check if there are changes to commit
     status = run_git(["status", "--porcelain"], workdir)
     if not status.stdout.strip():
-        print("[SHIP] No changes to commit.")
+        console.print("[yellow]No changes to commit.[/yellow]")
         return None
 
     # Commit
     commit_msg = f"feat: {task[:72]}"
     run_git(["commit", "-m", commit_msg], workdir)
-    print(f"[SHIP] Committed: {commit_msg}")
+    console.print(f"[dim]Committed: {commit_msg}[/dim]")
 
     # Push
     result = run_git(["push", "-u", "origin", branch_name], workdir)
     if result.returncode != 0:
         raise RuntimeError(f"Failed to push: {result.stderr}")
-    print(f"[SHIP] Pushed to origin/{branch_name}")
+    console.print(f"[dim]Pushed to origin/{branch_name}[/dim]")
 
     # Create PR
     draft_flag = ["--draft"] if config["pr"].get("draft") else []
@@ -258,7 +468,7 @@ def phase_ship(task: str, config: dict, workdir: str) -> str | None:
         raise RuntimeError(f"Failed to create PR: {pr_result.stderr}")
 
     pr_url = pr_result.stdout.strip()
-    print(f"[SHIP] PR created: {pr_url}")
+    console.print(f"[green bold]PR created: {pr_url}[/green bold]")
     return pr_url
 
 
@@ -267,9 +477,8 @@ def phase_ship(task: str, config: dict, workdir: str) -> str | None:
 
 def phase_review(task: str, pr_url: str, config: dict, workdir: str):
     """Fresh Opus session reviews the PR, runs tests, presents results."""
-    print("\n" + "─" * 60)
-    print("PHASE 5: PR Review (Fresh Opus 4.6 Session)")
-    print("─" * 60)
+    console.print()
+    console.rule("[bold]Phase 5: PR Review[/bold]")
 
     test_cmd = config["tests"]["command"]
 
@@ -293,10 +502,12 @@ Format your output clearly so it's easy to read in a terminal."""
     model = config["models"]["review"]
     result = run_agent(prompt, model, workdir)
 
-    print("\n" + "=" * 60)
-    print("PR REVIEW RESULTS")
-    print("=" * 60)
-    print(result.stdout)
+    console.print()
+    console.print(
+        Panel(
+            result.stdout, title="[bold]PR Review Results[/bold]", border_style="cyan"
+        )
+    )
 
     return result
 
@@ -306,37 +517,36 @@ Format your output clearly so it's easy to read in a terminal."""
 
 def phase_approve(pr_url: str, config: dict, workdir: str):
     """Notify human and wait for merge approval."""
-    print("\n" + "─" * 60)
-    print("PHASE 6: Human Approval")
-    print("─" * 60)
+    console.print()
+    console.rule("[bold]Phase 6: Human Approval[/bold]")
 
     notify(f"PR ready for your review: {pr_url}", config)
 
-    print(f"\nPR URL: {pr_url}")
-    print("\nOptions:")
-    print("  [m] Merge the PR")
-    print("  [s] Skip (leave PR open)")
-    print("  [a] Abort (close PR)")
+    console.print(f"\nPR URL: [link={pr_url}]{pr_url}[/link]")
+    console.print("\nOptions:")
+    console.print("  [bold green]\\[m][/bold green] Merge the PR")
+    console.print("  [bold yellow]\\[s][/bold yellow] Skip (leave PR open)")
+    console.print("  [bold red]\\[a][/bold red] Abort (close PR)")
 
     while True:
         choice = input("\nYour choice (m/s/a): ").strip().lower()
         if choice == "m":
             result = run_gh(["pr", "merge", pr_url, "--merge"], workdir)
             if result.returncode == 0:
-                print("[APPROVED] PR merged successfully.")
+                console.print("[green bold]PR merged successfully.[/green bold]")
             else:
-                print(f"[ERROR] Merge failed: {result.stderr}")
-                print("You may need to merge manually.")
+                console.print(f"[red]Merge failed: {result.stderr}[/red]")
+                console.print("[dim]You may need to merge manually.[/dim]")
             break
         elif choice == "s":
-            print("[SKIPPED] PR left open for manual review.")
+            console.print("[yellow]PR left open for manual review.[/yellow]")
             break
         elif choice == "a":
             result = run_gh(["pr", "close", pr_url], workdir)
-            print("[ABORTED] PR closed.")
+            console.print("[red]PR closed.[/red]")
             break
         else:
-            print("Invalid choice. Enter m, s, or a.")
+            console.print("[red]Invalid choice. Enter m, s, or a.[/red]")
 
 
 # ─── Main Pipeline ───────────────────────────────────────────────────────────
@@ -347,14 +557,21 @@ def run_pipeline(task: str, workdir: str, config_path: str | None = None):
     config = load_config(config_path)
     workdir = os.path.abspath(workdir)
 
-    print(f"\n{'=' * 60}")
-    print(f"  AGENT ORCHESTRATOR")
-    print(f"  Task: {task}")
-    print(f"  Working dir: {workdir}")
-    print(f"  Models: {config['models']['feature']} / {config['models']['refactor']}")
-    print(f"{'=' * 60}")
+    console.clear()
+    console.print(
+        Panel(
+            f"[bold]Task:[/bold] {task}\n"
+            f"[bold]Working dir:[/bold] {workdir}\n"
+            f"[bold]Models:[/bold] {config['models']['feature']} / {config['models']['refactor']}",
+            title="[bold blue]AGENT ORCHESTRATOR[/bold blue]",
+            border_style="blue",
+        )
+    )
 
     try:
+        # Phase 0: Clarifying questions (optional, interactive)
+        task = phase_clarify(task, config, workdir)
+
         # Phase 1: Decompose
         todo_content = phase_decompose(task, config, workdir)
 
@@ -367,7 +584,7 @@ def run_pipeline(task: str, workdir: str, config_path: str | None = None):
         # Phase 4: Ship
         pr_url = phase_ship(task, config, workdir)
         if pr_url is None:
-            print("[DONE] No changes produced. Pipeline complete.")
+            console.print("[yellow]No changes produced. Pipeline complete.[/yellow]")
             return
 
         # Phase 5: Review
@@ -378,15 +595,23 @@ def run_pipeline(task: str, workdir: str, config_path: str | None = None):
 
     except RuntimeError as e:
         notify(f"Pipeline failed: {e}", config)
-        print(f"\n[FATAL] {e}")
+        console.print(f"\n[red bold]FATAL: {e}[/red bold]")
         sys.exit(1)
     except KeyboardInterrupt:
-        print("\n[INTERRUPTED] Pipeline stopped by user.")
+        console.print("\n[yellow]Pipeline stopped by user.[/yellow]")
         sys.exit(130)
+    finally:
+        # Clean up the todo file
+        todo_path = Path(workdir) / config["orchestrator"]["todo_file"]
+        if todo_path.exists():
+            todo_path.unlink()
+            console.print(f"[dim]Cleaned up {todo_path.name}[/dim]")
 
-    print(f"\n{'=' * 60}")
-    print("  PIPELINE COMPLETE")
-    print(f"{'=' * 60}\n")
+    console.print()
+    console.print(
+        Panel("[bold green]PIPELINE COMPLETE[/bold green]", border_style="green")
+    )
+    console.print()
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
