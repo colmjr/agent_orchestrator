@@ -2,6 +2,8 @@
 """
 Agent Orchestrator - Multi-model pipeline for feature development.
 
+Uses OpenCode CLI (https://opencode.ai) to orchestrate across providers.
+
 Pipeline:
   1. Task decomposition → TODO.md
   2. Opus 4.6: Feature implementation (full context)
@@ -55,14 +57,9 @@ def slugify(text: str) -> str:
     return slug[:50]
 
 
-def run_claude(
-    prompt: str, model: str, workdir: str, print_mode: bool = True
-) -> subprocess.CompletedProcess:
-    """Run a Claude Code CLI session."""
-    cmd = ["claude"]
-    if print_mode:
-        cmd.append("--print")
-    cmd.extend(["--model", model, prompt])
+def run_agent(prompt: str, model: str, workdir: str) -> subprocess.CompletedProcess:
+    """Run an OpenCode CLI session."""
+    cmd = ["opencode", "run", "--model", model, prompt]
 
     print(f"\n[AGENT] Running {model}...")
     print(f"[AGENT] Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
@@ -120,7 +117,7 @@ Write a TODO.md file in the project root with:
 Write ONLY the TODO.md file, nothing else."""
 
     model = config["models"]["feature"]
-    result = run_claude(prompt, model, workdir)
+    result = run_agent(prompt, model, workdir)
 
     todo_path = Path(workdir) / config["orchestrator"]["todo_file"]
     if todo_path.exists():
@@ -158,7 +155,7 @@ Implement all the subtasks in the TODO. For each completed subtask, update TODO.
 Work through each item methodically. Write clean, well-structured code. Make sure everything compiles/runs correctly before finishing."""
 
     model = config["models"]["feature"]
-    result = run_claude(prompt, model, workdir)
+    result = run_agent(prompt, model, workdir)
 
     if result.returncode != 0:
         raise RuntimeError(f"Feature implementation failed: {result.stderr[:300]}")
@@ -189,7 +186,7 @@ Focus on recently modified files (check git status for changed files).
 Do not touch test files unless they have clear code quality issues."""
 
     model = config["models"]["refactor"]
-    result = run_claude(prompt, model, workdir)
+    result = run_agent(prompt, model, workdir)
 
     if result.returncode != 0:
         raise RuntimeError(f"Refactor phase failed: {result.stderr[:300]}")
@@ -294,7 +291,7 @@ Do the following:
 Format your output clearly so it's easy to read in a terminal."""
 
     model = config["models"]["review"]
-    result = run_claude(prompt, model, workdir)
+    result = run_agent(prompt, model, workdir)
 
     print("\n" + "=" * 60)
     print("PR REVIEW RESULTS")

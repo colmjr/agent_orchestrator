@@ -1,10 +1,10 @@
 # Agent Orchestrator Configuration
 
-# Model assignments per phase
+# Model assignments per phase (provider/model format for OpenCode)
 models:
-  feature: "claude-opus-4-6"       # Full-context feature implementation
-  refactor: "codex-5.3"            # Cold refactor - zero prior context
-  review: "claude-opus-4-6"        # Fresh PR review session
+  feature: "anthropic/claude-opus-4-6"    # Full-context feature implementation
+  refactor: "openai/codex-5.3"            # Cold refactor - zero prior context
+  review: "anthropic/claude-opus-4-6"     # Fresh PR review session
 
 # Branch naming
 branching:

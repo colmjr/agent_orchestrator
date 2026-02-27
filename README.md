@@ -37,7 +37,7 @@ Task Description
 ## Prerequisites
 
 - Python 3.10+
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude` command available in PATH)
+- [OpenCode](https://opencode.ai) (`opencode` command available in PATH, with API keys configured for your providers)
 - [GitHub CLI](https://cli.github.com/) (`gh` command, authenticated)
 - Git
 
@@ -75,11 +75,11 @@ python orchestrator.py "Refactor the database layer" -w ./my-project -c ./my-con
 Edit `config.yaml` to customize the pipeline:
 
 ```yaml
-# Model assignments per phase
+# Model assignments per phase (provider/model format for OpenCode)
 models:
-  feature: "claude-opus-4-6"       # Task decomposition + implementation
-  refactor: "codex-5.3"            # Cold refactor
-  review: "claude-opus-4-6"        # PR review
+  feature: "anthropic/claude-opus-4-6"    # Task decomposition + implementation
+  refactor: "openai/codex-5.3"            # Cold refactor
+  review: "anthropic/claude-opus-4-6"     # PR review
 
 # Branch naming (produces: feat/your-task-slug-0227)
 branching:
@@ -161,25 +161,25 @@ $ python orchestrator.py "Add rate limiting middleware to the Express API" -w ~/
   AGENT ORCHESTRATOR
   Task: Add rate limiting middleware to the Express API
   Working dir: /Users/you/projects/my-api
-  Models: claude-opus-4-6 / codex-5.3
+  Models: anthropic/claude-opus-4-6 / openai/codex-5.3
 ============================================================
 
 ────────────────────────────────────────────────────────────
 PHASE 1: Task Decomposition
 ────────────────────────────────────────────────────────────
-[AGENT] Running claude-opus-4-6...
+[AGENT] Running anthropic/claude-opus-4-6...
 [PHASE 1] TODO.md created
 
 ────────────────────────────────────────────────────────────
 PHASE 2: Feature Implementation (Opus 4.6)
 ────────────────────────────────────────────────────────────
-[AGENT] Running claude-opus-4-6...
+[AGENT] Running anthropic/claude-opus-4-6...
 [PHASE 2] Feature implementation complete.
 
 ────────────────────────────────────────────────────────────
 PHASE 3: Cold Refactor (Codex 5.3 - Zero Context)
 ────────────────────────────────────────────────────────────
-[AGENT] Running codex-5.3...
+[AGENT] Running openai/codex-5.3...
 [PHASE 3] Cold refactor complete.
 
 ────────────────────────────────────────────────────────────
@@ -193,7 +193,7 @@ PHASE 4: Ship (Branch + Commit + PR)
 ────────────────────────────────────────────────────────────
 PHASE 5: PR Review (Fresh Opus 4.6 Session)
 ────────────────────────────────────────────────────────────
-[AGENT] Running claude-opus-4-6...
+[AGENT] Running anthropic/claude-opus-4-6...
 
 ============================================================
 PR REVIEW RESULTS
