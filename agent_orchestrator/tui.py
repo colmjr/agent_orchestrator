@@ -873,8 +873,23 @@ class VimMessageArea(TextArea):
         self.vim_enabled = False
         self._status_callback: Callable[[], None] = lambda: None
         self._scroll_callback: Callable[[str], None] = lambda _direction: None
+        self._slash_menu_visible: Callable[[], bool] = lambda: False
+        self._decision_active: Callable[[], bool] = lambda: False
 
     async def _on_key(self, event) -> None:
+        # When decision menu is active, suppress TextArea handling but
+        # do NOT stop the event so it bubbles to App.on_key for menu routing.
+        if self._decision_active():
+            event.prevent_default()
+            return
+
+        # When slash menu is showing, let navigation keys bubble to App.on_key.
+        if event.key in {"enter", "escape", "up", "down"} and (
+            self._slash_menu_visible()
+        ):
+            event.prevent_default()
+            return
+
         if event.key in {"enter", "ctrl+enter"}:
             self.post_message(self.Submitted(self, self.text))
             self.clear()
@@ -1375,6 +1390,8 @@ class OrchestratorApp(App):
         inp.vim_enabled = self._vim_enabled
         inp._status_callback = self._update_input_mode_status
         inp._scroll_callback = self._scroll_output
+        inp._slash_menu_visible = self._is_slash_menu_visible
+        inp._decision_active = lambda: self._decision_active
         self._update_input_mode_status()
 
     def _update_input_mode_status(self) -> None:
