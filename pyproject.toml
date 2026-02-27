@@ -11,6 +11,7 @@ license = "MIT"
 dependencies = [
     "pyyaml>=6.0",
     "rich>=13.0",
+    "textual>=1.0",
 ]
 
 [project.scripts]

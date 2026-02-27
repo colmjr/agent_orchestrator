@@ -1,33 +1,44 @@
-# Agent Orchestrator Configuration
-
-# Model assignments per phase (provider/model format for OpenCode)
 models:
-  feature: "anthropic/claude-opus-4-6"    # Full-context feature implementation
-  refactor: "openai/codex-5.3"            # Cold refactor - zero prior context
-  review: "anthropic/claude-opus-4-6"     # Fresh PR review session
-
-# Branch naming
+  feature: anthropic/claude-opus-4-6
+  refactor: openai/codex-5.3
+  review: anthropic/claude-opus-4-6
 branching:
-  prefix: "feat"                   # Branch prefix: feat/task-slug
-  separator: "/"
-
-# PR settings
+  prefix: feat
+  separator: /
 pr:
-  draft: false                     # Create as draft PR
-  base_branch: "main"             # Default base branch
-
-# Notification settings
+  draft: false
+  base_branch: main
 notifications:
   terminal_bell: true
   stdout: true
-
-# Test commands - customize per project
 tests:
-  command: "npm test"              # Override per project
+  command: npm test
   coverage: true
-
-# Orchestrator behavior
 orchestrator:
-  todo_file: "TODO.md"
-  max_retries: 2                   # Retries per phase on failure
-  require_tests_pass: true         # Block PR review if tests fail
+  todo_file: TODO.md
+  max_retries: 2
+  require_tests_pass: true
+  plan_approval: true
+  plan_quality_check: true
+  plan_quality_mode: balanced
+  plan_quality_retries: 2
+  auto_clear_context_on_bad_plan: true
+  plan_offtopic_keywords:
+    - history of chess
+    - chess essay
+    - 500-word
+    - 500 word
+    - essay
+    - poem
+    - trivia
+editor:
+  vim_mode: true
+ui:
+  input_height: 8
+theme:
+  accent: blue
+  success: green
+  error: red
+  warning: yellow
+  info: cyan
+  muted: dim

@@ -40,13 +40,48 @@ DEFAULT_CONFIG = SCRIPT_DIR / "config.yaml"
 def load_config(config_path: str | None = None) -> dict:
     path = Path(config_path) if config_path else DEFAULT_CONFIG
     if not path.exists():
-        console.print(f"[red bold]Config not found: {path}[/red bold]")
+        console.print(_theme.s("error", f"Config not found: {path}", bold=True))
         sys.exit(1)
     with open(path) as f:
         return yaml.safe_load(f)
 
 
+# ─── Theme ───────────────────────────────────────────────────────────────────
+
+DEFAULT_THEME = {
+    "accent": "blue",
+    "success": "green",
+    "error": "red",
+    "warning": "yellow",
+    "info": "cyan",
+    "muted": "dim",
+}
+
+
+class Theme:
+    """Resolves theme colors from config with fallback defaults."""
+
+    def __init__(self, config: dict) -> None:
+        theme_cfg = config.get("theme", {}) or {}
+        self.accent = theme_cfg.get("accent", DEFAULT_THEME["accent"])
+        self.success = theme_cfg.get("success", DEFAULT_THEME["success"])
+        self.error = theme_cfg.get("error", DEFAULT_THEME["error"])
+        self.warning = theme_cfg.get("warning", DEFAULT_THEME["warning"])
+        self.info = theme_cfg.get("info", DEFAULT_THEME["info"])
+        self.muted = theme_cfg.get("muted", DEFAULT_THEME["muted"])
+
+    def s(self, role: str, text: str, bold: bool = False) -> str:
+        """Style text with a theme role. Returns rich markup string."""
+        color = getattr(self, role, "white")
+        b = " bold" if bold else ""
+        return f"[{color}{b}]{text}[/{color}{b}]"
+
+
 # ─── Utilities ───────────────────────────────────────────────────────────────
+
+
+# Module-level theme, set when pipeline starts
+_theme = Theme({})
 
 
 def notify(message: str, config: dict):
@@ -57,7 +92,9 @@ def notify(message: str, config: dict):
         console.print()
         console.print(
             Panel(
-                f"[bold]{message}[/bold]", title="NOTIFICATION", border_style="yellow"
+                f"[bold]{message}[/bold]",
+                title="NOTIFICATION",
+                border_style=_theme.warning,
             )
         )
         console.print()
@@ -76,7 +113,7 @@ def _format_agent_event(event: dict) -> None:
     event_type = part.get("type", "")
 
     if event_type == "step-start":
-        console.print("[dim]---[/dim]")
+        console.print(_theme.s("muted", "---"))
 
     elif event_type == "tool":
         tool_name = part.get("tool", "unknown")
@@ -85,25 +122,25 @@ def _format_agent_event(event: dict) -> None:
         status = state.get("status", "")
 
         if title:
-            console.print(f"  [cyan bold]{tool_name}[/cyan bold] [dim]{title}[/dim]")
+            console.print(
+                f"  {_theme.s('info', tool_name, bold=True)} {_theme.s('muted', title)}"
+            )
         else:
-            # Show the input for context
             tool_input = state.get("input", {})
             input_summary = ""
             if isinstance(tool_input, dict):
-                # Show first meaningful value
                 for key in ("filePath", "command", "pattern", "content"):
                     if key in tool_input:
                         val = str(tool_input[key])
                         input_summary = val[:80] + ("..." if len(val) > 80 else "")
                         break
             console.print(
-                f"  [cyan bold]{tool_name}[/cyan bold] [dim]{input_summary}[/dim]"
+                f"  {_theme.s('info', tool_name, bold=True)} {_theme.s('muted', input_summary)}"
             )
 
         if status == "error":
             error = state.get("error", "unknown error")
-            console.print(f"  [red]{error}[/red]")
+            console.print(f"  {_theme.s('error', error)}")
 
     elif event_type == "text":
         text = part.get("text", "")
@@ -115,7 +152,9 @@ def _format_agent_event(event: dict) -> None:
         total = tokens.get("total", 0)
         output = tokens.get("output", 0)
         if total:
-            console.print(f"[dim]  tokens: {total:,} total, {output:,} output[/dim]")
+            console.print(
+                _theme.s("muted", f"  tokens: {total:,} total, {output:,} output")
+            )
 
 
 def run_agent(
@@ -124,11 +163,10 @@ def run_agent(
     """Run an OpenCode CLI session with real-time streaming output."""
     cmd = ["opencode", "run", "--format", "json", "--model", model, prompt]
 
-    console.print(f"\n[dim]Running {model}...[/dim]")
-    console.print(
-        f"[dim]Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}[/dim]"
-    )
-    console.print(f"[dim]Working dir: {workdir}[/dim]\n")
+    console.print(f"\n{_theme.s('muted', f'Running {model}...')}")
+    prompt_preview = prompt[:100] + ("..." if len(prompt) > 100 else "")
+    console.print(_theme.s("muted", f"Prompt: {prompt_preview}"))
+    console.print(_theme.s("muted", f"Working dir: {workdir}") + "\n")
 
     process = subprocess.Popen(
         cmd,
@@ -178,7 +216,9 @@ def run_agent(
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait()
-        console.print(f"\n[red bold]Agent timed out after {timeout}s[/red bold]")
+        console.print(
+            f"\n{_theme.s('error', f'Agent timed out after {timeout}s', bold=True)}"
+        )
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=-1,
@@ -192,11 +232,13 @@ def run_agent(
     stderr_str = "".join(stderr_lines)
 
     if process.returncode != 0:
-        console.print(f"\n[red]Agent exited with code {process.returncode}[/red]")
+        console.print(
+            f"\n{_theme.s('error', f'Agent exited with code {process.returncode}')}"
+        )
         if stderr_str:
-            console.print(f"[red]{stderr_str[:500]}[/red]")
+            console.print(_theme.s("error", stderr_str[:500]))
     else:
-        console.print(f"\n[green]Agent completed successfully.[/green]")
+        console.print(f"\n{_theme.s('success', 'Agent completed successfully.')}")
 
     return subprocess.CompletedProcess(
         args=cmd,
@@ -216,6 +258,33 @@ def run_gh(args: list[str], workdir: str) -> subprocess.CompletedProcess:
     """Run a GitHub CLI command."""
     cmd = ["gh"] + args
     return subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
+
+
+def git_branch_exists(branch: str, workdir: str) -> bool:
+    """Return True if a local branch exists."""
+    if not branch:
+        return False
+    result = run_git(["show-ref", "--verify", f"refs/heads/{branch}"], workdir)
+    return result.returncode == 0
+
+
+def current_branch(workdir: str) -> str:
+    """Get currently checked-out branch name."""
+    result = run_git(["branch", "--show-current"], workdir)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def resolve_base_branch(preferred: str, workdir: str) -> str:
+    """Resolve a usable base branch for local operations."""
+    if git_branch_exists(preferred, workdir):
+        return preferred
+    current = current_branch(workdir)
+    if current:
+        return current
+    for fallback in ("main", "master"):
+        if git_branch_exists(fallback, workdir):
+            return fallback
+    return preferred or "main"
 
 
 # ─── Phase 0: Clarifying Questions ──────────────────────────────────────────
@@ -245,13 +314,20 @@ Do NOT include any other text, preamble, or explanation."""
 
     if not questions:
         console.print(
-            "[dim]Could not generate clarifying questions. Proceeding with original task.[/dim]"
+            _theme.s(
+                "muted",
+                "Could not generate clarifying questions. Proceeding with original task.",
+            )
         )
         return task
 
     console.print(f"\n  Generated {len(questions)} clarifying question(s).")
-    console.print('  [dim](Press Enter to skip a question, "skip" to skip all,[/dim]')
-    console.print('  [dim] or "own" to provide your own context instead.)[/dim]\n')
+    console.print(
+        _theme.s("muted", '  (Press Enter to skip a question, "skip" to skip all,')
+    )
+    console.print(
+        _theme.s("muted", '   or "own" to provide your own context instead.)') + "\n"
+    )
 
     answers = []
     freeform_text = None
@@ -264,11 +340,12 @@ Do NOT include any other text, preamble, or explanation."""
             break
 
         if response.lower() == "skip":
-            console.print("  [dim]Skipping remaining questions.[/dim]")
+            console.print("  " + _theme.s("muted", "Skipping remaining questions."))
             break
         elif response.lower() == "own":
             console.print(
-                "\n  [bold]Provide your own context[/bold] [dim](enter a blank line to finish):[/dim]"
+                "\n  [bold]Provide your own context[/bold] "
+                + _theme.s("muted", "(enter a blank line to finish):")
             )
             lines = []
             while True:
@@ -290,7 +367,10 @@ Do NOT include any other text, preamble, or explanation."""
     # Build enriched task string
     if not answers and not freeform_text:
         console.print(
-            "[dim]No additional context provided. Proceeding with original task.[/dim]"
+            _theme.s(
+                "muted",
+                "No additional context provided. Proceeding with original task.",
+            )
         )
         return task
 
@@ -304,7 +384,7 @@ Do NOT include any other text, preamble, or explanation."""
     if freeform_text:
         enriched += f"\n\nAdditional context from user:\n{freeform_text}"
 
-    console.print("\n[green]Task enriched with user context.[/green]")
+    console.print("\n" + _theme.s("success", "Task enriched with user context."))
     return enriched
 
 
@@ -334,14 +414,14 @@ Write ONLY the TODO.md file, nothing else."""
 
     todo_path = Path(workdir) / config["orchestrator"]["todo_file"]
     if todo_path.exists():
-        console.print(f"[green]TODO.md created at {todo_path}[/green]")
+        console.print(_theme.s("success", f"TODO.md created at {todo_path}"))
         with open(todo_path) as f:
             content = f.read()
         console.print(content)
         return content
     else:
         # If claude didn't create the file, create it from output
-        console.print("[yellow]Creating TODO.md from agent output...[/yellow]")
+        console.print(_theme.s("warning", "Creating TODO.md from agent output..."))
         with open(todo_path, "w") as f:
             f.write(result.stdout)
         return result.stdout
@@ -372,7 +452,7 @@ Work through each item methodically. Write clean, well-structured code. Make sur
     if result.returncode != 0:
         raise RuntimeError(f"Feature implementation failed: {result.stderr[:300]}")
 
-    console.print("[green]Phase 2 complete.[/green]")
+    console.print(_theme.s("success", "Phase 2 complete."))
     return result
 
 
@@ -402,15 +482,22 @@ Do not touch test files unless they have clear code quality issues."""
     if result.returncode != 0:
         raise RuntimeError(f"Refactor phase failed: {result.stderr[:300]}")
 
-    console.print("[green]Phase 3 complete.[/green]")
+    console.print(_theme.s("success", "Phase 3 complete."))
     return result
 
 
 # ─── Phase 4: Ship (Branch + PR) ────────────────────────────────────────────
 
 
-def phase_ship(task: str, config: dict, workdir: str) -> str | None:
-    """Checkout new branch, commit changes, create PR."""
+def phase_ship(
+    task: str, config: dict, workdir: str, local_mode: bool = False
+) -> tuple[str | None, str, str]:
+    """Checkout new branch, commit changes, and optionally push + create PR.
+
+    Returns (pr_url_or_local_ref, branch_name, base_branch).
+    pr_url_or_local_ref is None if no changes, "local:<branch>" in local mode,
+    or a PR URL in remote mode.
+    """
     console.print()
     console.rule("[bold]Phase 4: Ship[/bold]")
 
@@ -419,10 +506,18 @@ def phase_ship(task: str, config: dict, workdir: str) -> str | None:
     sep = config["branching"]["separator"]
     timestamp = datetime.now().strftime("%m%d")
     branch_name = f"{prefix}{sep}{slug}-{timestamp}"
-    base_branch = config["pr"]["base_branch"]
+    configured_base = config["pr"]["base_branch"]
+    base_branch = resolve_base_branch(configured_base, workdir)
+    if configured_base != base_branch:
+        console.print(
+            _theme.s(
+                "warning",
+                f"Configured base branch '{configured_base}' not found; using '{base_branch}'.",
+            )
+        )
 
     # Checkout new branch
-    console.print(f"[dim]Creating branch: {branch_name}[/dim]")
+    console.print(_theme.s("muted", f"Creating branch: {branch_name}"))
     result = run_git(["checkout", "-b", branch_name], workdir)
     if result.returncode != 0:
         raise RuntimeError(f"Failed to create branch: {result.stderr}")
@@ -433,19 +528,28 @@ def phase_ship(task: str, config: dict, workdir: str) -> str | None:
     # Check if there are changes to commit
     status = run_git(["status", "--porcelain"], workdir)
     if not status.stdout.strip():
-        console.print("[yellow]No changes to commit.[/yellow]")
-        return None
+        console.print(_theme.s("warning", "No changes to commit."))
+        return None, branch_name, base_branch
 
     # Commit
     commit_msg = f"feat: {task[:72]}"
     run_git(["commit", "-m", commit_msg], workdir)
-    console.print(f"[dim]Committed: {commit_msg}[/dim]")
+    console.print(_theme.s("muted", f"Committed: {commit_msg}"))
+
+    if local_mode:
+        console.print(
+            _theme.s(
+                "muted",
+                f"Branch {branch_name} created and committed locally.",
+            )
+        )
+        return f"local:{branch_name}", branch_name, base_branch
 
     # Push
     result = run_git(["push", "-u", "origin", branch_name], workdir)
     if result.returncode != 0:
         raise RuntimeError(f"Failed to push: {result.stderr}")
-    console.print(f"[dim]Pushed to origin/{branch_name}[/dim]")
+    console.print(_theme.s("muted", f"Pushed to origin/{branch_name}"))
 
     # Create PR
     draft_flag = ["--draft"] if config["pr"].get("draft") else []
@@ -468,21 +572,41 @@ def phase_ship(task: str, config: dict, workdir: str) -> str | None:
         raise RuntimeError(f"Failed to create PR: {pr_result.stderr}")
 
     pr_url = pr_result.stdout.strip()
-    console.print(f"[green bold]PR created: {pr_url}[/green bold]")
-    return pr_url
+    console.print(_theme.s("success", f"PR created: {pr_url}", bold=True))
+    return pr_url, branch_name, base_branch
 
 
 # ─── Phase 5: PR Review ─────────────────────────────────────────────────────
 
 
-def phase_review(task: str, pr_url: str, config: dict, workdir: str):
-    """Fresh Opus session reviews the PR, runs tests, presents results."""
+def phase_review(
+    task: str, pr_url: str, config: dict, workdir: str, local_mode: bool = False
+):
+    """Fresh session reviews the PR (or local diff), runs tests, presents results."""
     console.print()
     console.rule("[bold]Phase 5: PR Review[/bold]")
 
     test_cmd = config["tests"]["command"]
+    base_branch = resolve_base_branch(config["pr"]["base_branch"], workdir)
 
-    prompt = f"""You are a code reviewer. A PR has been created for the following task:
+    if local_mode:
+        prompt = f"""You are a code reviewer. Review the changes on the current branch.
+
+TASK: {task}
+
+Do the following:
+1. Review the diff against {base_branch} using: git diff {base_branch}...HEAD
+2. Run the test suite with: {test_cmd}
+3. Check for test parity - are all existing tests still passing? Are there new tests for the new functionality?
+4. Summarize your findings clearly:
+   - List any issues or concerns
+   - Test results (pass/fail count, coverage if available)
+   - Whether the changes are safe to merge
+5. Print a clear RECOMMENDATION: APPROVE or REQUEST_CHANGES with reasoning
+
+Format your output clearly so it's easy to read in a terminal."""
+    else:
+        prompt = f"""You are a code reviewer. A PR has been created for the following task:
 
 TASK: {task}
 PR: {pr_url}
@@ -505,7 +629,9 @@ Format your output clearly so it's easy to read in a terminal."""
     console.print()
     console.print(
         Panel(
-            result.stdout, title="[bold]PR Review Results[/bold]", border_style="cyan"
+            result.stdout,
+            title="[bold]PR Review Results[/bold]",
+            border_style=_theme.info,
         )
     )
 
@@ -515,56 +641,215 @@ Format your output clearly so it's easy to read in a terminal."""
 # ─── Phase 6: Human Approval ────────────────────────────────────────────────
 
 
-def phase_approve(pr_url: str, config: dict, workdir: str):
+def phase_approve(
+    pr_url: str,
+    config: dict,
+    workdir: str,
+    local_mode: bool = False,
+    branch_name: str = "",
+    base_branch: str = "main",
+):
     """Notify human and wait for merge approval."""
+    if local_mode:
+        base_branch = resolve_base_branch(base_branch, workdir)
+
     console.print()
     console.rule("[bold]Phase 6: Human Approval[/bold]")
 
-    notify(f"PR ready for your review: {pr_url}", config)
-
-    console.print(f"\nPR URL: [link={pr_url}]{pr_url}[/link]")
-    console.print("\nOptions:")
-    console.print("  [bold green]\\[m][/bold green] Merge the PR")
-    console.print("  [bold yellow]\\[s][/bold yellow] Skip (leave PR open)")
-    console.print("  [bold red]\\[a][/bold red] Abort (close PR)")
+    if local_mode:
+        notify(f"Branch ready for your review: {branch_name}", config)
+        console.print(f"\nBranch: {branch_name}")
+        console.print("\nOptions:")
+        console.print(
+            f"  {_theme.s('success', '[m]', bold=True)} Merge into {base_branch}"
+        )
+        console.print(
+            f"  {_theme.s('warning', '[s]', bold=True)} Skip (leave branch as-is)"
+        )
+        console.print(f"  {_theme.s('error', '[a]', bold=True)} Abort (delete branch)")
+    else:
+        notify(f"PR ready for your review: {pr_url}", config)
+        console.print(f"\nPR URL: [link={pr_url}]{pr_url}[/link]")
+        console.print("\nOptions:")
+        console.print(f"  {_theme.s('success', '[m]', bold=True)} Merge the PR")
+        console.print(f"  {_theme.s('warning', '[s]', bold=True)} Skip (leave PR open)")
+        console.print(f"  {_theme.s('error', '[a]', bold=True)} Abort (close PR)")
 
     while True:
         choice = input("\nYour choice (m/s/a): ").strip().lower()
         if choice == "m":
-            result = run_gh(["pr", "merge", pr_url, "--merge"], workdir)
-            if result.returncode == 0:
-                console.print("[green bold]PR merged successfully.[/green bold]")
+            if local_mode:
+                result = run_git(["checkout", base_branch], workdir)
+                if result.returncode != 0:
+                    console.print(
+                        _theme.s(
+                            "error",
+                            f"Failed to checkout {base_branch}: {result.stderr}",
+                        )
+                    )
+                    break
+                result = run_git(
+                    [
+                        "merge",
+                        branch_name,
+                        "--no-ff",
+                        "-m",
+                        f"Merge branch '{branch_name}'",
+                    ],
+                    workdir,
+                )
+                if result.returncode == 0:
+                    console.print(
+                        _theme.s(
+                            "success",
+                            f"Branch '{branch_name}' merged into {base_branch}.",
+                            bold=True,
+                        )
+                    )
+                    run_git(["branch", "-d", branch_name], workdir)
+                else:
+                    console.print(_theme.s("error", f"Merge failed: {result.stderr}"))
+                    console.print(
+                        _theme.s(
+                            "muted",
+                            "You may need to resolve conflicts manually.",
+                        )
+                    )
             else:
-                console.print(f"[red]Merge failed: {result.stderr}[/red]")
-                console.print("[dim]You may need to merge manually.[/dim]")
+                result = run_gh(["pr", "merge", pr_url, "--merge"], workdir)
+                if result.returncode == 0:
+                    console.print(
+                        _theme.s("success", "PR merged successfully.", bold=True)
+                    )
+                else:
+                    console.print(_theme.s("error", f"Merge failed: {result.stderr}"))
+                    console.print(_theme.s("muted", "You may need to merge manually."))
             break
         elif choice == "s":
-            console.print("[yellow]PR left open for manual review.[/yellow]")
+            if local_mode:
+                console.print(
+                    _theme.s("warning", f"Branch '{branch_name}' left as-is.")
+                )
+            else:
+                console.print(_theme.s("warning", "PR left open for manual review."))
             break
         elif choice == "a":
-            result = run_gh(["pr", "close", pr_url], workdir)
-            console.print("[red]PR closed.[/red]")
+            if local_mode:
+                run_git(["checkout", base_branch], workdir)
+                result = run_git(["branch", "-D", branch_name], workdir)
+                if result.returncode == 0:
+                    console.print(_theme.s("error", f"Branch '{branch_name}' deleted."))
+                else:
+                    console.print(
+                        _theme.s(
+                            "error",
+                            f"Failed to delete branch: {result.stderr}",
+                        )
+                    )
+            else:
+                run_gh(["pr", "close", pr_url], workdir)
+                console.print(_theme.s("error", "PR closed."))
             break
         else:
-            console.print("[red]Invalid choice. Enter m, s, or a.[/red]")
+            console.print(_theme.s("error", "Invalid choice. Enter m, s, or a."))
 
 
 # ─── Main Pipeline ───────────────────────────────────────────────────────────
 
 
+def _ensure_git_repo(workdir: str) -> bool:
+    """Ensure the workdir exists and is a git repository with an origin remote.
+
+    Returns True if operating in local mode (no remote), False otherwise.
+    """
+    path = Path(workdir)
+    if not path.exists():
+        path.mkdir(parents=True)
+        console.print(_theme.s("muted", f"Created directory: {workdir}"))
+
+    git_dir = path / ".git"
+    if not git_dir.exists():
+        result = subprocess.run(
+            ["git", "init"], cwd=workdir, capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            console.print(_theme.s("muted", f"Initialized git repo in {workdir}"))
+        else:
+            console.print(
+                _theme.s("error", f"Failed to init git repo: {result.stderr}")
+            )
+            return True
+
+    # Check for origin remote
+    result = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        console.print(_theme.s("warning", "No 'origin' remote configured.", bold=True))
+        console.print(
+            _theme.s(
+                "muted",
+                "A remote is needed for pushing branches and creating PRs.",
+            )
+        )
+        console.print(
+            _theme.s(
+                "muted",
+                "Example: https://github.com/user/repo.git or git@github.com:user/repo.git",
+            )
+        )
+        try:
+            url = input("  Remote URL (or Enter to work locally): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            url = ""
+
+        if url:
+            add_result = subprocess.run(
+                ["git", "remote", "add", "origin", url],
+                cwd=workdir,
+                capture_output=True,
+                text=True,
+            )
+            if add_result.returncode == 0:
+                console.print(_theme.s("success", f"Remote 'origin' set to {url}"))
+                return False
+            else:
+                console.print(
+                    _theme.s("error", f"Failed to add remote: {add_result.stderr}")
+                )
+                return True
+        else:
+            console.print(
+                _theme.s(
+                    "warning",
+                    "Local mode — branches and reviews will happen locally.",
+                )
+            )
+            return True
+
+    return False
+
+
 def run_pipeline(task: str, workdir: str, config_path: str | None = None):
     """Execute the full orchestrator pipeline."""
+    global _theme
     config = load_config(config_path)
+    _theme = Theme(config)
     workdir = os.path.abspath(workdir)
+    local_mode = _ensure_git_repo(workdir)
 
     console.clear()
+    mode_label = " [yellow](local mode)[/yellow]" if local_mode else ""
     console.print(
         Panel(
             f"[bold]Task:[/bold] {task}\n"
-            f"[bold]Working dir:[/bold] {workdir}\n"
+            f"[bold]Working dir:[/bold] {workdir}{mode_label}\n"
             f"[bold]Models:[/bold] {config['models']['feature']} / {config['models']['refactor']}",
-            title="[bold blue]AGENT ORCHESTRATOR[/bold blue]",
-            border_style="blue",
+            title=_theme.s("accent", "AGENT ORCHESTRATOR", bold=True),
+            border_style=_theme.accent,
         )
     )
 
@@ -582,34 +867,39 @@ def run_pipeline(task: str, workdir: str, config_path: str | None = None):
         phase_refactor(config, workdir)
 
         # Phase 4: Ship
-        pr_url = phase_ship(task, config, workdir)
+        pr_url, branch_name, base_branch = phase_ship(task, config, workdir, local_mode)
         if pr_url is None:
-            console.print("[yellow]No changes produced. Pipeline complete.[/yellow]")
+            console.print(
+                _theme.s("warning", "No changes produced. Pipeline complete.")
+            )
             return
 
         # Phase 5: Review
-        phase_review(task, pr_url, config, workdir)
+        phase_review(task, pr_url, config, workdir, local_mode)
 
         # Phase 6: Human approval
-        phase_approve(pr_url, config, workdir)
+        phase_approve(pr_url, config, workdir, local_mode, branch_name, base_branch)
 
     except RuntimeError as e:
         notify(f"Pipeline failed: {e}", config)
-        console.print(f"\n[red bold]FATAL: {e}[/red bold]")
+        console.print(f"\n{_theme.s('error', f'FATAL: {e}', bold=True)}")
         sys.exit(1)
     except KeyboardInterrupt:
-        console.print("\n[yellow]Pipeline stopped by user.[/yellow]")
+        console.print("\n" + _theme.s("warning", "Pipeline stopped by user."))
         sys.exit(130)
     finally:
         # Clean up the todo file
         todo_path = Path(workdir) / config["orchestrator"]["todo_file"]
         if todo_path.exists():
             todo_path.unlink()
-            console.print(f"[dim]Cleaned up {todo_path.name}[/dim]")
+            console.print(_theme.s("muted", f"Cleaned up {todo_path.name}"))
 
     console.print()
     console.print(
-        Panel("[bold green]PIPELINE COMPLETE[/bold green]", border_style="green")
+        Panel(
+            _theme.s("success", "PIPELINE COMPLETE", bold=True),
+            border_style=_theme.success,
+        )
     )
     console.print()
 
@@ -626,9 +916,12 @@ Examples:
   %(prog)s "Add user authentication with JWT tokens"
   %(prog)s "Fix the pagination bug in /api/users" --workdir ./my-project
   %(prog)s "Refactor the database layer" --config ./custom-config.yaml
+  %(prog)s --no-tui "Quick fix" --workdir ./my-project
         """,
     )
-    parser.add_argument("task", help="Description of the task to implement")
+    parser.add_argument(
+        "task", nargs="?", default=None, help="Description of the task to implement"
+    )
     parser.add_argument(
         "--workdir",
         "-w",
@@ -641,9 +934,23 @@ Examples:
         default=None,
         help="Path to config.yaml (default: orchestrator's config.yaml)",
     )
+    parser.add_argument(
+        "--no-tui",
+        action="store_true",
+        default=False,
+        help="Run in headless mode (no interactive TUI)",
+    )
 
     args = parser.parse_args()
-    run_pipeline(args.task, args.workdir, args.config)
+
+    if args.no_tui:
+        if not args.task:
+            parser.error("task is required in --no-tui mode")
+        run_pipeline(args.task, args.workdir, args.config)
+    else:
+        from agent_orchestrator.tui import run_tui
+
+        run_tui(args.task, args.workdir, args.config)
 
 
 if __name__ == "__main__":
