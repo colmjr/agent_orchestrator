@@ -1492,9 +1492,9 @@ class OrchestratorApp(App):
         return str(models.get(phase_key, feature))
 
     def _models_summary(self) -> str:
-        """Build a compact model summary string for UI/log display."""
-        feature = self._model_for("feature")
+        """Build a compact unique-model summary for UI/log display."""
         phase_keys = [
+            "feature",
             "clarify",
             "planning",
             "implement",
@@ -1502,20 +1502,19 @@ class OrchestratorApp(App):
             "refactor",
             "review",
         ]
-        resolved = {key: self._model_for(key) for key in phase_keys}
+        seen: set[str] = set()
+        unique_models: list[str] = []
+        for key in phase_keys:
+            model = self._model_for(key)
+            if model and model not in seen:
+                seen.add(model)
+                unique_models.append(model)
 
-        if all(model == feature for model in resolved.values()):
-            return feature
-
-        return (
-            f"feature={feature} | "
-            f"clarify={resolved['clarify']} | "
-            f"planning={resolved['planning']} | "
-            f"implement={resolved['implement']} | "
-            f"configure={resolved['configure']} | "
-            f"refactor={resolved['refactor']} | "
-            f"review={resolved['review']}"
-        )
+        if not unique_models:
+            return "none"
+        if len(unique_models) == 1:
+            return unique_models[0]
+        return ", ".join(unique_models)
 
     def action_interrupt(self) -> None:
         """Interrupt the currently running agent."""
