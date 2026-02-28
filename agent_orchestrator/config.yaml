@@ -40,10 +40,10 @@ editor:
 ui:
   input_height: 8
 theme:
-  preset: nord
   accent: '#88C0D0'
   success: '#A3BE8C'
   error: '#BF616A'
   warning: '#EBCB8B'
   info: '#81A1C1'
   muted: '#4C566A'
+  preset: nord

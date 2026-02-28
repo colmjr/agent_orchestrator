@@ -64,6 +64,20 @@ def load_config(config_path: str | None = None) -> dict:
         return yaml.safe_load(f)
 
 
+# Map our config preset names to Textual's built-in theme names.
+# Textual ships with: textual-dark, textual-light, nord, gruvbox, dracula,
+# solarized-light, solarized-dark, catppuccin-mocha, tokyo-night, monokai, etc.
+TEXTUAL_THEME_MAP = {
+    "default": "textual-dark",
+    "nord": "nord",
+    "gruvbox": "gruvbox",
+    "dracula": "dracula",
+    "solarized": "solarized-dark",
+    "monokai": "monokai",
+    "tokyo-night": "tokyo-night",
+    "catppuccin": "catppuccin-mocha",
+}
+
 SLASH_COMMANDS = [
     ("/configure", "Describe config changes in plain text"),
     ("/theme", "Set or view theme preset"),
@@ -1083,12 +1097,14 @@ class Sidebar(Static):
 
         # ── Directory & Branch ───
         parts.append("[bold]Directory[/bold]")
-        display_dir = self._workdir
+        display_dir = self._workdir or "[dim]—[/dim]"
         if len(display_dir) > 28:
             display_dir = "..." + display_dir[-25:]
         parts.append(f"  [dim]{display_dir}[/dim]")
         if self._branch:
             parts.append(f"  [cyan]{self._branch}[/cyan]")
+        else:
+            parts.append("  [dim]—[/dim]")
 
         # Input mode
         if self._input_mode == "insert":
@@ -1105,19 +1121,20 @@ class Sidebar(Static):
             parts.append(f"  Tokens: [dim]{self._total_tokens:,}[/dim]")
             parts.append(f"  Output: [dim]{self._output_tokens:,}[/dim]")
             if self._total_tokens > 0:
-                # Context estimate: rough % of 200k window used
                 ctx_pct = min(100, (self._total_tokens / 200_000) * 100)
                 parts.append(f"  Context: [dim]~{ctx_pct:.0f}%[/dim]")
             parts.append(f"  Cost: [dim]~${self._cost_usd:.2f}[/dim]")
         else:
-            parts.append("  [dim]No usage yet[/dim]")
+            parts.append("  Tokens: [dim]0[/dim]")
+            parts.append("  Cost: [dim]$0.00[/dim]")
         parts.append("")
 
         # ── TODO Progress ────────
+        parts.append("[bold]TODO[/bold]")
         if self._todo_items:
             done = sum(1 for c, _ in self._todo_items if c)
             total = len(self._todo_items)
-            parts.append(f"[bold]TODO[/bold] [dim]{done}/{total}[/dim]")
+            parts[-1] = f"[bold]TODO[/bold] [dim]{done}/{total}[/dim]"
             for checked, text in self._todo_items:
                 icon = "[green]x[/green]" if checked else "[dim]o[/dim]"
                 label = text[:26] + ("..." if len(text) > 26 else "")
@@ -1125,21 +1142,37 @@ class Sidebar(Static):
                     parts.append(f"  {icon} [dim]{label}[/dim]")
                 else:
                     parts.append(f"  {icon} {label}")
-            parts.append("")
+        else:
+            parts.append("  [dim]—[/dim]")
+        parts.append("")
 
         # ── Modified Files ───────
+        parts.append("[bold]Modified[/bold]")
         if self._modified_files:
-            parts.append(
-                f"[bold]Modified[/bold] [dim]{len(self._modified_files)}[/dim]"
-            )
+            parts[-1] = f"[bold]Modified[/bold] [dim]{len(self._modified_files)}[/dim]"
             for line in self._modified_files:
                 # git status --short gives "XY filename"
-                status = line[:2]
+                raw_status = line[:2]
                 fname = line[3:].strip()
                 if len(fname) > 24:
                     fname = "..." + fname[-21:]
-                color = "green" if "A" in status or "?" in status else "yellow"
-                parts.append(f"  [{color}]{status}[/{color}] [dim]{fname}[/dim]")
+                # Map raw git codes to readable labels
+                status_map = {
+                    "??": ("new", "green"),
+                    "A ": ("add", "green"),
+                    "AM": ("add", "green"),
+                    "M ": ("mod", "yellow"),
+                    " M": ("mod", "yellow"),
+                    "MM": ("mod", "yellow"),
+                    "D ": ("del", "red"),
+                    " D": ("del", "red"),
+                    "R ": ("ren", "cyan"),
+                    "C ": ("cpy", "cyan"),
+                }
+                label, color = status_map.get(raw_status, ("mod", "yellow"))
+                parts.append(f"  [{color}]{label:>3}[/{color}] [dim]{fname}[/dim]")
+        else:
+            parts.append("  [dim]—[/dim]")
 
         self.update("\n".join(parts))
 
@@ -1423,6 +1456,15 @@ class OrchestratorApp(App):
             )
             sidebar.set_input_mode("normal")
 
+    def _apply_textual_theme(self) -> None:
+        """Set the Textual app theme to match the config preset."""
+        preset = self.config.get("theme", {}).get("preset", "default")
+        textual_name = TEXTUAL_THEME_MAP.get(preset, "textual-dark")
+        try:
+            self.theme = textual_name
+        except Exception:
+            self.theme = "textual-dark"
+
     def _scroll_output(self, direction: str) -> None:
         """Scroll output pane while keeping message input focused."""
         log = self.query_one("#output-log", RichLog)
@@ -1442,6 +1484,7 @@ class OrchestratorApp(App):
             return
 
     def on_mount(self) -> None:
+        self._apply_textual_theme()
         log = self.query_one("#output-log", RichLog)
         log.can_focus = False
         sidebar = self.query_one(Sidebar)
@@ -1676,10 +1719,15 @@ class OrchestratorApp(App):
             title = state.get("title", "")
             status = state.get("status", "")
 
+            # Mark bash/shell commands with ! for visibility
+            bash_tools = {"bash", "shell", "execute", "run", "terminal", "command"}
+            is_bash = tool_name.lower() in bash_tools or "bash" in tool_name.lower()
+            indicator = "[bold red]![/bold red] " if is_bash else "  "
+
             if title:
                 self.app.call_from_thread(
                     self._log_write,
-                    f"  {t.s('info', tool_name, bold=True)} {t.s('muted', title)}",
+                    f"{indicator}{t.s('info', tool_name, bold=True)} {t.s('muted', title)}",
                 )
             else:
                 tool_input = state.get("input", {})
@@ -1692,7 +1740,7 @@ class OrchestratorApp(App):
                             break
                 self.app.call_from_thread(
                     self._log_write,
-                    f"  {t.s('info', tool_name, bold=True)} {t.s('muted', input_summary)}",
+                    f"{indicator}{t.s('info', tool_name, bold=True)} {t.s('muted', input_summary)}",
                 )
 
             if status == "error":
@@ -2778,13 +2826,6 @@ class OrchestratorApp(App):
                 log.write("[dim]Config request cancelled.[/dim]")
                 self._waiting_for_config_description = False
                 return
-            # During workdir startup, empty Enter accepts the default
-            if self._startup_phase == "workdir":
-                log = self.query_one("#output-log", RichLog)
-                log.write(f"\n[bold green]You:[/bold green] {self.workdir}")
-                self._startup_phase = None
-                self._start_pipeline()
-                return
             # If we're waiting for phase input, empty means skip
             if self._input_future and not self._input_future.done():
                 self._input_future.set_result("")
@@ -2799,6 +2840,49 @@ class OrchestratorApp(App):
             self._handle_slash_command(message, log)
             return
 
+        # ── Shell escape (!command) ──────────────────────────────────
+        if message.startswith("!"):
+            shell_cmd = message[1:].strip()
+            if not shell_cmd:
+                log.write("[dim]Usage: !<command>  (e.g. !ls, !cd .., !pwd)[/dim]")
+                return
+            # Handle !cd specially — change workdir
+            if shell_cmd.startswith("cd "):
+                target = shell_cmd[3:].strip()
+                new_dir = os.path.abspath(os.path.join(self.workdir, target))
+                if os.path.isdir(new_dir):
+                    self.workdir = new_dir
+                    self.query_one(Sidebar).set_workdir(self.workdir)
+                    log.write(f"[dim]Changed directory to: {self.workdir}[/dim]")
+                else:
+                    log.write(f"[red]Not a directory: {new_dir}[/red]")
+                return
+            if shell_cmd == "cd":
+                log.write(f"[dim]Current directory: {self.workdir}[/dim]")
+                return
+            # Run other shell commands
+            log.write(f"[bold red]![/bold red] {shell_cmd}")
+            try:
+                result = subprocess.run(
+                    shell_cmd,
+                    shell=True,
+                    cwd=self.workdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.stdout.strip():
+                    log.write(f"[dim]{result.stdout.strip()}[/dim]")
+                if result.stderr.strip():
+                    log.write(f"[red]{result.stderr.strip()}[/red]")
+                if result.returncode != 0:
+                    log.write(f"[red]Exit code: {result.returncode}[/red]")
+            except subprocess.TimeoutExpired:
+                log.write("[red]Command timed out (30s limit).[/red]")
+            except Exception as e:
+                log.write(f"[red]Error: {e}[/red]")
+            return
+
         log.write(f"\n[bold green]You:[/bold green] {message}")
 
         # ── Plain-text config flow ───────────────────────────────────
@@ -2807,22 +2891,9 @@ class OrchestratorApp(App):
             self._configure_from_plain_text(message)
             return
 
-        # ── Startup flow — collecting task / workdir ─────────────────
+        # ── Startup flow — collecting task ───────────────────────────
         if self._startup_phase == "task":
             self.user_task = message
-            log.write(
-                f"\n{self.t.s('info', 'Working directory:')}\n"
-                f"[dim]Current: {self.workdir}[/dim]\n"
-                "[dim]Press Enter to use current directory, or type a path.[/dim]\n"
-            )
-            self._startup_phase = "workdir"
-            inp = self.query_one("#message-input", VimMessageArea)
-            inp.placeholder = f"Working directory (Enter for {self.workdir})..."
-            return
-
-        if self._startup_phase == "workdir":
-            if message:
-                self.workdir = os.path.abspath(message)
             self._startup_phase = None
             self._start_pipeline()
             return
@@ -2984,6 +3055,7 @@ class OrchestratorApp(App):
         # Reload config, theme, and editor settings
         self.config = new_config
         self.t = Theme(self.config)
+        self._apply_textual_theme()
         self._vim_enabled = self.config.get("editor", {}).get("vim_mode", False)
         self._apply_ui_settings()
         self._sync_vim_state()
@@ -3036,6 +3108,7 @@ class OrchestratorApp(App):
 
             self.config = config
             self.t = Theme(self.config)
+            self._apply_textual_theme()
             return True
         except (OSError, yaml.YAMLError):
             return False
@@ -3107,6 +3180,7 @@ class OrchestratorApp(App):
 
             self.config = cfg
             self.t = Theme(self.config)
+            self._apply_textual_theme()
             self._vim_enabled = self.config.get("editor", {}).get("vim_mode", False)
             self._apply_ui_settings()
             self._sync_vim_state()
@@ -3162,6 +3236,7 @@ class OrchestratorApp(App):
 
         self.config = new_config
         self.t = Theme(self.config)
+        self._apply_textual_theme()
         self._vim_enabled = self.config.get("editor", {}).get("vim_mode", False)
         self._apply_ui_settings()
         self._sync_vim_state()
