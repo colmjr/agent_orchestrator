@@ -154,6 +154,57 @@ class VimHandler:
         for _ in range(max(1, count)):
             fn()
 
+    def _run_editor_action(self, count: int, action: Callable[[], None]) -> None:
+        """Run an editor action repeatedly with vim-style count semantics."""
+        self._run_times(count, action)
+
+    def _run_input_find(self, inp: Input, ch: str, count: int, till: bool) -> None:
+        """Move input cursor to f/t match on the current line."""
+        text = inp.value
+        pos = inp.cursor_position
+        idx = -1
+        start = pos + 1
+        for _ in range(max(1, count)):
+            idx = text.find(ch, start)
+            if idx == -1:
+                return
+            start = idx + 1
+        inp.cursor_position = max(0, idx - 1) if till else idx
+
+    def _handle_pending_input(
+        self, pending: str, key: str, char: str | None, inp: Input, count: int
+    ) -> bool:
+        """Handle pending multi-key commands in Input normal mode."""
+        if pending == "d" and key == "w":
+            self._run_editor_action(count, inp.action_delete_right_word)
+            self._last_change_input = lambda i, n=max(1, count): self._run_times(
+                n, i.action_delete_right_word
+            )
+            return True
+        if pending == "c" and key == "w":
+            self._run_editor_action(count, inp.action_delete_right_word)
+            self._last_change_input = lambda i, n=max(1, count): self._run_times(
+                n, i.action_delete_right_word
+            )
+            self.mode = "insert"
+            return True
+        if pending == "d" and (char == "$" or key == "end"):
+            inp.action_delete_right_all()
+            self._last_change_input = lambda i: i.action_delete_right_all()
+            return True
+        if pending == "c" and (char == "$" or key == "end"):
+            inp.action_delete_right_all()
+            self._last_change_input = lambda i: i.action_delete_right_all()
+            self.mode = "insert"
+            return True
+        if pending == "f" and char:
+            self._run_input_find(inp, char, count, till=False)
+            return True
+        if pending == "t" and char:
+            self._run_input_find(inp, char, count, till=True)
+            return True
+        return True
+
     def _repeat_change_textarea(self, editor: TextArea) -> None:
         if self._last_change_textarea:
             self._last_change_textarea(editor)
@@ -380,28 +431,22 @@ class VimHandler:
             editor.action_cursor_up()
             return True
         elif key == "h" or key == "left":
-            for _ in range(count):
-                editor.action_cursor_left()
+            self._run_editor_action(count, editor.action_cursor_left)
             return True
         elif key == "j" or key == "down":
-            for _ in range(count):
-                editor.action_cursor_down()
+            self._run_editor_action(count, editor.action_cursor_down)
             return True
         elif key == "k" or key == "up":
-            for _ in range(count):
-                editor.action_cursor_up()
+            self._run_editor_action(count, editor.action_cursor_up)
             return True
         elif key == "l" or key == "right":
-            for _ in range(count):
-                editor.action_cursor_right()
+            self._run_editor_action(count, editor.action_cursor_right)
             return True
         elif key == "w":
-            for _ in range(count):
-                editor.action_cursor_word_right()
+            self._run_editor_action(count, editor.action_cursor_word_right)
             return True
         elif key == "b":
-            for _ in range(count):
-                editor.action_cursor_word_left()
+            self._run_editor_action(count, editor.action_cursor_word_left)
             return True
         elif key == "e":
             target = self._find_word_end(editor, count)
@@ -414,8 +459,7 @@ class VimHandler:
             editor.action_cursor_line_end()
             return True
         elif key == "x":
-            for _ in range(count):
-                editor.action_delete_right()
+            self._run_editor_action(count, editor.action_delete_right)
             self._last_change_textarea = lambda ta, n=count: self._run_times(
                 n, ta.action_delete_right
             )
@@ -474,8 +518,7 @@ class VimHandler:
             self.mode = "insert"
             return True
         elif char == "J":
-            for _ in range(max(1, count)):
-                self._join_next_line(editor)
+            self._run_editor_action(count, lambda: self._join_next_line(editor))
             self._last_change_textarea = lambda ta, n=max(1, count): self._run_times(
                 n, lambda: self._join_next_line(ta)
             )
@@ -515,6 +558,39 @@ class VimHandler:
         # Consume all other keys in normal mode to prevent typing
         return True
 
+    def _handle_pending_range_op(
+        self, pending: str, char: str | None, editor: TextArea
+    ) -> bool:
+        """Handle ci?/di? pending range operations for TextArea."""
+        if pending not in {"ci", "di"} or not char:
+            return False
+
+        pair_map = {
+            '"': ('"', '"'),
+            "'": ("'", "'"),
+            "(": ("(", ")"),
+            ")": ("(", ")"),
+            "[": ("[", "]"),
+            "]": ("[", "]"),
+            "{": ("{", "}"),
+            "}": ("{", "}"),
+        }
+        pair = pair_map.get(char)
+        if not pair:
+            return True
+        match = self._inside_pair_range(editor, pair[0], pair[1])
+        if not match:
+            return True
+
+        start, end = match
+        editor.replace("", start, end)
+        self._last_change_textarea = (
+            lambda ta, s=start, e=end: ta.replace("", s, e) and None
+        )
+        if pending == "ci":
+            self.mode = "insert"
+        return True
+
     def _handle_pending(self, key: str, char: str | None, editor: TextArea) -> bool:
         """Handle the second character of a multi-char command."""
         pending = self._pending
@@ -523,101 +599,75 @@ class VimHandler:
         self._pending_count = 1
 
         if pending == "d" and key == "d":
-            for _ in range(max(1, count)):
-                editor.action_delete_line()
+            self._run_editor_action(count, editor.action_delete_line)
             self._last_change_textarea = lambda ta, n=max(1, count): self._run_times(
                 n, ta.action_delete_line
             )
             return True
-        elif pending == "d" and key == "w":
-            for _ in range(max(1, count)):
-                editor.action_delete_word_right()
+        if pending == "d" and key == "w":
+            self._run_editor_action(count, editor.action_delete_word_right)
             self._last_change_textarea = lambda ta, n=max(1, count): self._run_times(
                 n, ta.action_delete_word_right
             )
             return True
-        elif pending == "d" and (char == "$" or key == "end"):
+        if pending == "d" and (char == "$" or key == "end"):
             editor.action_delete_to_end_of_line()
             self._last_change_textarea = lambda ta: ta.action_delete_to_end_of_line()
             return True
-        elif pending == "d" and key == "i":
+        if pending == "d" and key == "i":
             self._pending = "di"
             self._pending_count = count
             return True
-        elif pending == "c" and key == "w":
-            for _ in range(max(1, count)):
-                editor.action_delete_word_right()
+        if pending == "c" and key == "w":
+            self._run_editor_action(count, editor.action_delete_word_right)
             self._last_change_textarea = lambda ta, n=max(1, count): self._run_times(
                 n, ta.action_delete_word_right
             )
             self.mode = "insert"
             return True
-        elif pending == "c" and (char == "$" or key == "end"):
+        if pending == "c" and (char == "$" or key == "end"):
             editor.action_delete_to_end_of_line()
             self._last_change_textarea = lambda ta: ta.action_delete_to_end_of_line()
             self.mode = "insert"
             return True
-        elif pending == "c" and key == "i":
+        if pending == "c" and key == "i":
             self._pending = "ci"
             self._pending_count = count
             return True
-        elif pending == "f" and char:
+        if pending == "f" and char:
             target = self._find_char_on_line(
                 editor, char, till=False, count=max(1, count)
             )
             if target:
                 editor.move_cursor(target)
             return True
-        elif pending == "t" and char:
+        if pending == "t" and char:
             target = self._find_char_on_line(
                 editor, char, till=True, count=max(1, count)
             )
             if target:
                 editor.move_cursor(target)
             return True
-        elif pending == "g" and key == "g":
+        if pending == "g" and key == "g":
             if count <= 1:
                 editor.action_scroll_home()
             else:
                 line_no = min(editor.document.line_count - 1, count - 1)
                 editor.move_cursor((line_no, 0), center=True)
             return True
-        elif pending == ">" and key == ">":
+        if pending == ">" and key == ">":
             self._indent_lines(editor, max(1, count), dedent=False)
             self._last_change_textarea = lambda ta, n=max(1, count): self._indent_lines(
                 ta, n, dedent=False
             )
             return True
-        elif pending == "<" and key == "<":
+        if pending == "<" and key == "<":
             self._indent_lines(editor, max(1, count), dedent=True)
             self._last_change_textarea = lambda ta, n=max(1, count): self._indent_lines(
                 ta, n, dedent=True
             )
             return True
-        elif pending in {"ci", "di"} and char:
-            pair_map = {
-                '"': ('"', '"'),
-                "'": ("'", "'"),
-                "(": ("(", ")"),
-                ")": ("(", ")"),
-                "[": ("[", "]"),
-                "]": ("[", "]"),
-                "{": ("{", "}"),
-                "}": ("{", "}"),
-            }
-            pair = pair_map.get(char)
-            if not pair:
-                return True
-            match = self._inside_pair_range(editor, pair[0], pair[1])
-            if not match:
-                return True
-            start, end = match
-            editor.replace("", start, end)
-            self._last_change_textarea = (
-                lambda ta, s=start, e=end: ta.replace("", s, e) and None
-            )
-            if pending == "ci":
-                self.mode = "insert"
+        if self._handle_pending_range_op(pending, char, editor):
             return True
 
         return True  # Consume unknown combos
@@ -636,55 +686,7 @@ class VimHandler:
             count = self._pending_count
             self._pending = ""
             self._pending_count = 1
-            if pending == "d" and key == "w":
-                for _ in range(max(1, count)):
-                    inp.action_delete_right_word()
-                self._last_change_input = lambda i, n=max(1, count): self._run_times(
-                    n, i.action_delete_right_word
-                )
-                return True
-            if pending == "c" and key == "w":
-                for _ in range(max(1, count)):
-                    inp.action_delete_right_word()
-                self._last_change_input = lambda i, n=max(1, count): self._run_times(
-                    n, i.action_delete_right_word
-                )
-                self.mode = "insert"
-                return True
-            if pending == "d" and (char == "$" or key == "end"):
-                inp.action_delete_right_all()
-                self._last_change_input = lambda i: i.action_delete_right_all()
-                return True
-            if pending == "c" and (char == "$" or key == "end"):
-                inp.action_delete_right_all()
-                self._last_change_input = lambda i: i.action_delete_right_all()
-                self.mode = "insert"
-                return True
-            if pending == "f" and char:
-                text = inp.value
-                pos = inp.cursor_position
-                idx = -1
-                start = pos + 1
-                for _ in range(max(1, count)):
-                    idx = text.find(char, start)
-                    if idx == -1:
-                        return True
-                    start = idx + 1
-                inp.cursor_position = idx
-                return True
-            if pending == "t" and char:
-                text = inp.value
-                pos = inp.cursor_position
-                idx = -1
-                start = pos + 1
-                for _ in range(max(1, count)):
-                    idx = text.find(char, start)
-                    if idx == -1:
-                        return True
-                    start = idx + 1
-                inp.cursor_position = max(0, idx - 1)
-                return True
-            return True
+            return self._handle_pending_input(pending, key, char, inp, count)
 
         if key.isdigit() and (self._count_buffer or key != "0"):
             self._count_buffer += key
@@ -707,20 +709,16 @@ class VimHandler:
             inp.action_home()
             return True
         elif key == "h" or key == "left":
-            for _ in range(count):
-                inp.action_cursor_left()
+            self._run_editor_action(count, inp.action_cursor_left)
             return True
         elif key == "l" or key == "right":
-            for _ in range(count):
-                inp.action_cursor_right()
+            self._run_editor_action(count, inp.action_cursor_right)
             return True
         elif key == "w":
-            for _ in range(count):
-                inp.action_cursor_right_word()
+            self._run_editor_action(count, inp.action_cursor_right_word)
             return True
         elif key == "b":
-            for _ in range(count):
-                inp.action_cursor_left_word()
+            self._run_editor_action(count, inp.action_cursor_left_word)
             return True
         elif key == "e":
             text = inp.value
@@ -743,8 +741,7 @@ class VimHandler:
             inp.action_end()
             return True
         elif key == "x":
-            for _ in range(count):
-                inp.action_delete_right()
+            self._run_editor_action(count, inp.action_delete_right)
             self._last_change_input = lambda i, n=count: self._run_times(
                 n, i.action_delete_right
             )
@@ -3052,14 +3049,7 @@ class OrchestratorApp(App):
             status.update(f" [bold red]Save failed:[/bold red] {e}")
             return False
 
-        # Reload config, theme, and editor settings
-        self.config = new_config
-        self.t = Theme(self.config)
-        self._apply_textual_theme()
-        self._vim_enabled = self.config.get("editor", {}).get("vim_mode", False)
-        self._apply_ui_settings()
-        self._sync_vim_state()
-        self.query_one(PhaseHeader).set_models(self._models_summary())
+        self._apply_loaded_config(new_config)
 
         if close_editor:
             self._close_config_editor()
@@ -3070,6 +3060,21 @@ class OrchestratorApp(App):
             self._update_config_status()
 
         return True
+
+    def _apply_loaded_config(
+        self, new_config: dict, reset_vim_insert: bool = False
+    ) -> None:
+        """Apply a newly loaded config to runtime state and UI widgets."""
+        self.config = new_config
+        self.t = Theme(self.config)
+        self._apply_textual_theme()
+        self._vim_enabled = self.config.get("editor", {}).get("vim_mode", False)
+        self._apply_ui_settings()
+        self._sync_vim_state()
+        self.query_one(PhaseHeader).set_models(self._models_summary())
+        if reset_vim_insert and self._vim_enabled:
+            self._vim.mode = "insert"
+            self._update_input_mode_status()
 
     def _persist_vim_setting(self, enabled: bool) -> None:
         """Save vim_mode setting to config file."""
@@ -3106,9 +3111,7 @@ class OrchestratorApp(App):
             with open(self._config_path, "w") as f:
                 yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
-            self.config = config
-            self.t = Theme(self.config)
-            self._apply_textual_theme()
+            self._apply_loaded_config(config)
             return True
         except (OSError, yaml.YAMLError):
             return False
@@ -3178,16 +3181,7 @@ class OrchestratorApp(App):
                 self._log_write(f"[red]Failed to write config: {e}[/red]")
                 return
 
-            self.config = cfg
-            self.t = Theme(self.config)
-            self._apply_textual_theme()
-            self._vim_enabled = self.config.get("editor", {}).get("vim_mode", False)
-            self._apply_ui_settings()
-            self._sync_vim_state()
-            self.query_one(PhaseHeader).set_models(self._models_summary())
-            if self._vim_enabled:
-                self._vim.mode = "insert"
-                self._update_input_mode_status()
+            self._apply_loaded_config(cfg, reset_vim_insert=True)
             self._log_write(
                 self.t.s("success", f"Set input height to {requested} lines.")
             )
@@ -3234,16 +3228,7 @@ class OrchestratorApp(App):
             self._log_write(f"[red]Failed to write config: {e}[/red]")
             return
 
-        self.config = new_config
-        self.t = Theme(self.config)
-        self._apply_textual_theme()
-        self._vim_enabled = self.config.get("editor", {}).get("vim_mode", False)
-        self._apply_ui_settings()
-        self._sync_vim_state()
-        self.query_one(PhaseHeader).set_models(self._models_summary())
-        if self._vim_enabled:
-            self._vim.mode = "insert"
-            self._update_input_mode_status()
+        self._apply_loaded_config(new_config, reset_vim_insert=True)
         self._log_write(self.t.s("success", "Config updated from plain text request."))
         self._log_write(f"[dim]Models: {self._models_summary()}[/dim]")
 
@@ -3326,8 +3311,6 @@ class OrchestratorApp(App):
                 )
             else:
                 if self._persist_theme_preset(arg):
-                    self._apply_ui_settings()
-                    self._sync_vim_state()
                     log.write(
                         self.t.s(
                             "success",

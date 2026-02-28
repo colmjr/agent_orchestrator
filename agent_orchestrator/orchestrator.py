@@ -14,16 +14,17 @@ Pipeline:
   6. Human: final merge approval
 """
 
+import argparse
+import json
+import os
+import re
 import subprocess
 import sys
-import os
-import json
-import yaml
-import argparse
-import re
 import threading
 from pathlib import Path
 from datetime import datetime
+
+import yaml
 
 from rich.console import Console
 from rich.panel import Panel
@@ -42,7 +43,7 @@ def load_config(config_path: str | None = None) -> dict:
     if not path.exists():
         console.print(_theme.s("error", f"Config not found: {path}", bold=True))
         sys.exit(1)
-    with open(path) as f:
+    with path.open(encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -151,9 +152,10 @@ _theme = Theme({})
 
 def notify(message: str, config: dict):
     """Send notification via terminal bell + stdout."""
-    if config["notifications"].get("terminal_bell"):
+    notifications = config.get("notifications", {})
+    if notifications.get("terminal_bell"):
         console.print("\a", end="")
-    if config["notifications"].get("stdout"):
+    if notifications.get("stdout"):
         console.print()
         console.print(
             Panel(
@@ -325,6 +327,44 @@ def run_gh(args: list[str], workdir: str) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
 
 
+def _build_review_prompt(
+    task: str, test_cmd: str, base_branch: str, local_mode: bool, pr_url: str
+) -> str:
+    if local_mode:
+        return f"""You are a code reviewer. Review the changes on the current branch.
+
+TASK: {task}
+
+Do the following:
+1. Review the diff against {base_branch} using: git diff {base_branch}...HEAD
+2. Run the test suite with: {test_cmd}
+3. Check for test parity - are all existing tests still passing? Are there new tests for the new functionality?
+4. Summarize your findings clearly:
+   - List any issues or concerns
+   - Test results (pass/fail count, coverage if available)
+   - Whether the changes are safe to merge
+5. Print a clear RECOMMENDATION: APPROVE or REQUEST_CHANGES with reasoning
+
+Format your output clearly so it's easy to read in a terminal."""
+
+    return f"""You are a code reviewer. A PR has been created for the following task:
+
+TASK: {task}
+PR: {pr_url}
+
+Do the following:
+1. Review the PR diff using `gh pr diff`
+2. Run the test suite with: {test_cmd}
+3. Check for test parity - are all existing tests still passing? Are there new tests for the new functionality?
+4. Summarize your findings clearly:
+   - List any issues or concerns
+   - Test results (pass/fail count, coverage if available)
+   - Whether the changes are safe to merge
+5. Print a clear RECOMMENDATION: APPROVE or REQUEST_CHANGES with reasoning
+
+Format your output clearly so it's easy to read in a terminal."""
+
+
 def git_branch_exists(branch: str, workdir: str) -> bool:
     """Return True if a local branch exists."""
     if not branch:
@@ -480,15 +520,13 @@ Write ONLY the TODO.md file, nothing else."""
     todo_path = Path(workdir) / config["orchestrator"]["todo_file"]
     if todo_path.exists():
         console.print(_theme.s("success", f"TODO.md created at {todo_path}"))
-        with open(todo_path) as f:
-            content = f.read()
+        content = todo_path.read_text(encoding="utf-8")
         console.print(content)
         return content
     else:
         # If claude didn't create the file, create it from output
         console.print(_theme.s("warning", "Creating TODO.md from agent output..."))
-        with open(todo_path, "w") as f:
-            f.write(result.stdout)
+        todo_path.write_text(result.stdout, encoding="utf-8")
         return result.stdout
 
 
@@ -588,7 +626,9 @@ def phase_ship(
         raise RuntimeError(f"Failed to create branch: {result.stderr}")
 
     # Stage all changes
-    run_git(["add", "-A"], workdir)
+    result = run_git(["add", "-A"], workdir)
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to stage changes: {result.stderr}")
 
     # Check if there are changes to commit
     status = run_git(["status", "--porcelain"], workdir)
@@ -598,7 +638,9 @@ def phase_ship(
 
     # Commit
     commit_msg = f"feat: {task[:72]}"
-    run_git(["commit", "-m", commit_msg], workdir)
+    result = run_git(["commit", "-m", commit_msg], workdir)
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to commit changes: {result.stderr}")
     console.print(_theme.s("muted", f"Committed: {commit_msg}"))
 
     if local_mode:
@@ -654,39 +696,7 @@ def phase_review(
     test_cmd = config["tests"]["command"]
     base_branch = resolve_base_branch(config["pr"]["base_branch"], workdir)
 
-    if local_mode:
-        prompt = f"""You are a code reviewer. Review the changes on the current branch.
-
-TASK: {task}
-
-Do the following:
-1. Review the diff against {base_branch} using: git diff {base_branch}...HEAD
-2. Run the test suite with: {test_cmd}
-3. Check for test parity - are all existing tests still passing? Are there new tests for the new functionality?
-4. Summarize your findings clearly:
-   - List any issues or concerns
-   - Test results (pass/fail count, coverage if available)
-   - Whether the changes are safe to merge
-5. Print a clear RECOMMENDATION: APPROVE or REQUEST_CHANGES with reasoning
-
-Format your output clearly so it's easy to read in a terminal."""
-    else:
-        prompt = f"""You are a code reviewer. A PR has been created for the following task:
-
-TASK: {task}
-PR: {pr_url}
-
-Do the following:
-1. Review the PR diff using `gh pr diff`
-2. Run the test suite with: {test_cmd}
-3. Check for test parity - are all existing tests still passing? Are there new tests for the new functionality?
-4. Summarize your findings clearly:
-   - List any issues or concerns
-   - Test results (pass/fail count, coverage if available)
-   - Whether the changes are safe to merge
-5. Print a clear RECOMMENDATION: APPROVE or REQUEST_CHANGES with reasoning
-
-Format your output clearly so it's easy to read in a terminal."""
+    prompt = _build_review_prompt(task, test_cmd, base_branch, local_mode, pr_url)
 
     model = config["models"]["review"]
     result = run_agent(prompt, model, workdir)
@@ -834,9 +844,7 @@ def _ensure_git_repo(workdir: str) -> bool:
 
     git_dir = path / ".git"
     if not git_dir.exists():
-        result = subprocess.run(
-            ["git", "init"], cwd=workdir, capture_output=True, text=True
-        )
+        result = run_git(["init"], workdir)
         if result.returncode == 0:
             console.print(_theme.s("muted", f"Initialized git repo in {workdir}"))
         else:
@@ -846,12 +854,7 @@ def _ensure_git_repo(workdir: str) -> bool:
             return True
 
     # Check for origin remote
-    result = subprocess.run(
-        ["git", "remote", "get-url", "origin"],
-        cwd=workdir,
-        capture_output=True,
-        text=True,
-    )
+    result = run_git(["remote", "get-url", "origin"], workdir)
     if result.returncode != 0:
         console.print(_theme.s("warning", "No 'origin' remote configured.", bold=True))
         console.print(
@@ -872,12 +875,7 @@ def _ensure_git_repo(workdir: str) -> bool:
             url = ""
 
         if url:
-            add_result = subprocess.run(
-                ["git", "remote", "add", "origin", url],
-                cwd=workdir,
-                capture_output=True,
-                text=True,
-            )
+            add_result = run_git(["remote", "add", "origin", url], workdir)
             if add_result.returncode == 0:
                 console.print(_theme.s("success", f"Remote 'origin' set to {url}"))
                 return False
